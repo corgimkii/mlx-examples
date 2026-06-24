@@ -111,7 +111,7 @@ if __name__ == "__main__":
     mx.reset_peak_memory()
 
     # 3. VAE decode
-    video = pipeline.decode(x_t)
+    video = pipeline.decode(x_t, progress=args.verbose)
     mx.eval(video)
     peak_mem_decoding = mx.get_peak_memory() / 1024**3
 

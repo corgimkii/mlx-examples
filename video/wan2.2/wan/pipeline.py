@@ -73,7 +73,11 @@ class WanPipeline:
         return self._null_context
 
     def _prepare_image_conditioning(
-        self, image_path: str, size: Tuple[int, int], frame_num: int
+        self,
+        image_path: str,
+        size: Tuple[int, int],
+        frame_num: int,
+        progress: bool = False,
     ) -> Tuple[mx.array, mx.array]:
         """Encode the input image into VAE latent space and build a temporal mask.
 
@@ -102,7 +106,7 @@ class WanPipeline:
         zeros = mx.zeros((frame_num - 1, H, W, 3))
         video = mx.concatenate([img_tensor[None], zeros], axis=0)
 
-        z_clean = self.vae.encode(video).astype(self.dtype)  # [T', H', W', 48]
+        z_clean = self.vae.encode(video, progress=progress).astype(self.dtype)
 
         T_lat, H_lat, W_lat, _ = z_clean.shape
         mask_first = mx.zeros((1, H_lat, W_lat, 1), dtype=self.dtype)
@@ -184,7 +188,7 @@ class WanPipeline:
         mask = None
         if image_path is not None:
             z_clean, mask = self._prepare_image_conditioning(
-                image_path, size, frame_num
+                image_path, size, frame_num, progress=verbose
             )
 
         # Initial noise; for I2V the conditioning frame is re-injected at every step.
@@ -220,5 +224,5 @@ class WanPipeline:
             if verbose:
                 logger.info(f"Step {step_idx}/{num_steps}")
 
-    def decode(self, latents: mx.array) -> mx.array:
-        return self.vae.decode(latents)
+    def decode(self, latents: mx.array, progress: bool = False) -> mx.array:
+        return self.vae.decode(latents, progress=progress)

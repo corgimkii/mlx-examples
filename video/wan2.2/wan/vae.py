@@ -761,17 +761,31 @@ class WanVAE(nn.Module):
         # shape only. The cache list is mutated in place by each chunk so the
         # branching is resolved by the eager call.
 
-    def encode(self, x: mx.array) -> mx.array:
-        """Encode a video tensor [F, H, W, 3] (channels-last, [-1, 1])."""
+    def encode(self, x: mx.array, progress: bool = False) -> mx.array:
+        """Encode a video tensor [F, H, W, 3] (channels-last, [-1, 1]).
+
+        progress: if True, show a tqdm bar over input chunks. The chunked
+            loop is silent otherwise and can take ~10s of seconds at high
+            resolutions, so callers running interactively typically want
+            this on.
+        """
         x = x[None]  # [1, F, H, W, 3]
         x = _patchify(x, self.PATCH_SIZE)  # [1, F, H/2, W/2, 12]
 
         num_frames = x.shape[1]
+        # First chunk is 1 frame (causal init), subsequent chunks are 4 frames
+        num_chunks = 1 + (num_frames - 1 + 3) // 4 if num_frames > 0 else 0
+
         feat_cache = [None] * self.encoder.num_cache_slots
         outputs = []
         i = 0
         chunk_idx = 0
-        while i < num_frames:
+        chunk_iter = range(num_chunks)
+        if progress:
+            from tqdm import tqdm
+
+            chunk_iter = tqdm(chunk_iter, desc="VAE encode", unit="chunk")
+        for _ in chunk_iter:
             if chunk_idx == 0:
                 chunk = x[:, i : i + 1]
                 i += 1
@@ -789,8 +803,13 @@ class WanVAE(nn.Module):
         mu = (mu - self.mean) / self.std
         return mu[0]
 
-    def decode(self, z: mx.array) -> mx.array:
-        """Decode a latent [F, H, W, 48] back to a video tensor [-1, 1]."""
+    def decode(self, z: mx.array, progress: bool = False) -> mx.array:
+        """Decode a latent [F, H, W, 48] back to a video tensor [-1, 1].
+
+        progress: see `encode` — the frame-by-frame loop can take a minute
+            or more at high resolutions, so verbose runs benefit from a
+            tqdm bar here.
+        """
         z = z[None]
         z = z * self.std + self.mean
         x = self.conv2(z)
@@ -798,7 +817,12 @@ class WanVAE(nn.Module):
         num_frames = x.shape[1]
         feat_cache = [None] * self.decoder.num_cache_slots
         outputs = []
-        for i in range(num_frames):
+        frame_iter = range(num_frames)
+        if progress:
+            from tqdm import tqdm
+
+            frame_iter = tqdm(frame_iter, desc="VAE decode", unit="frame")
+        for i in frame_iter:
             frame = x[:, i : i + 1]
             out_frame, feat_cache = self.decoder(
                 frame, feat_cache, first_chunk=(i == 0)

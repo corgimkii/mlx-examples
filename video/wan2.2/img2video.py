@@ -110,7 +110,7 @@ if __name__ == "__main__":
     peak_mem_generation = mx.get_peak_memory() / 1024**3
     mx.reset_peak_memory()
 
-    video = pipeline.decode(x_t)
+    video = pipeline.decode(x_t, progress=args.verbose)
     mx.eval(video)
     peak_mem_decoding = mx.get_peak_memory() / 1024**3
 

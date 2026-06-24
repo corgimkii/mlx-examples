@@ -6,9 +6,14 @@ single DiT covers both text-to-video and image-to-video — image conditioning
 is injected at the latent level (no separate CLIP encoder). Weights are
 pulled from the [Hugging Face Hub](https://huggingface.co/Wan-AI).
 
-| Model | Task | HF Repo | RAM (unquantized) |
-|-------|------|---------|-------------------|
-| 5B | T2V / I2V | [Wan-AI/Wan2.2-TI2V-5B](https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B) | TBD (see [Memory](#memory) below) |
+| Model | Task | HF Repo | RAM (bf16), 121 frames | Single DiT step on M5 Pro, 121 frames |
+|-------|------|---------|------------------------|---------------------------------------|
+| 5B | T2V / I2V | [Wan-AI/Wan2.2-TI2V-5B](https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B) | ~39GB | ~129 s/it |
+
+| T2V 5B |
+|---|
+| ![WAN 2.2 TI2V-5B T2V](static/out_t2v_cats.gif) |
+| Two anthropomorphic cats in comfy boxing gear and bright gloves fight intensely on a spotlighted stage. |
 
 Compared to the Wan2.1 example next door, Wan2.2 TI2V-5B differs in:
 
@@ -71,11 +76,19 @@ python txt2video.py 'A cat playing piano' --quantize --output out_quantized.mp4
 
 ### Memory
 
-The denoising step's peak memory is dominated by the DiT activations at
-the configured (frames, size). The 5B DiT in bf16 is ~10 GB on its own;
-add the T5 encoder (~10 GB bf16) during conditioning and the VAE during
-decode. Use `--quantize` to cut DiT weight memory roughly in half (`-q 8`)
-or quarter (`-q 4`).
+Measured peaks at 1280×704 / 121 frames / 50 steps on M5 Pro 64 GB:
+
+| Stage | Peak (bf16) |
+|---|---|
+| Conditioning (T5 active) | ~25 GB |
+| Generation (DiT active) | ~39 GB |
+| Decoding (VAE active) | ~38 GB |
+
+The denoising step's peak memory is dominated by the DiT activations at the
+configured (frames, size). The 5B DiT in bf16 is ~10 GB on its own; add the
+T5 encoder (~10 GB bf16) during conditioning and the VAE during decode. Use
+`--quantize` to cut DiT weight memory roughly in half (`-q 8`) or quarter
+(`-q 4`).
 
 To get additional memory savings at the expense of a bit of speed, pass
 `--no-cache` to set `mx.set_cache_limit(0)`. See the
