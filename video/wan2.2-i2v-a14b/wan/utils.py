@@ -135,6 +135,19 @@ def load_dit(name: str, expert: str, checkpoint: Optional[str] = None) -> WanMod
     return model
 
 
+def load_lightx2v_lora(expert: str) -> dict:
+    """Download and load the `lightx2v/Wan2.2-Lightning` 4-step distillation
+    LoRA for the given expert ('high' or 'low'). Returns the raw safetensors
+    dict (with HF naming) for sanitization downstream.
+    """
+    assert expert in ("high", "low")
+    repo_id = "lightx2v/Wan2.2-Lightning"
+    subdir = "Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1"
+    filename = f"{subdir}/{expert}_noise_model.safetensors"
+    path = _hf_download(repo_id, filename)
+    return mx.load(path)
+
+
 def load_vae(name: str) -> WanVAE:
     """Load VAE decoder with weights from HF Hub."""
     spec = configs[name]

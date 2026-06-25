@@ -25,8 +25,16 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+from .lora import apply_lora
 from .sampler import FlowUniPCMultistepScheduler
-from .utils import configs, load_dit, load_t5, load_t5_tokenizer, load_vae
+from .utils import (
+    configs,
+    load_dit,
+    load_lightx2v_lora,
+    load_t5,
+    load_t5_tokenizer,
+    load_vae,
+)
 
 
 class WanPipeline:
@@ -37,11 +45,16 @@ class WanPipeline:
         checkpoint_high: Optional[str] = None,
         checkpoint_low: Optional[str] = None,
         quantize_bits: int = 0,
+        lightx2v: bool = False,
     ):
         """
         quantize_bits: 0 = no quantization, 4 = int4, 8 = int8. Applied to
             each expert at load time so we never hold an un-quantized 14B
             in memory.
+        lightx2v: if True, fuse the `lightx2v/Wan2.2-Lightning` 4-step
+            distillation LoRA into each expert at load time. The LoRA is
+            baked into the base weight before quantization so there is no
+            per-step LoRA overhead in the denoising loop.
         """
         self.dtype = dtype
         self.name = name
@@ -49,6 +62,7 @@ class WanPipeline:
         self.z_dim = 16
         self._null_context = None
         self.quantize_bits = quantize_bits
+        self.lightx2v = lightx2v
         self._checkpoint_high = checkpoint_high
         self._checkpoint_low = checkpoint_low
 
@@ -78,6 +92,10 @@ class WanPipeline:
 
         checkpoint = self._checkpoint_high if expert == "high" else self._checkpoint_low
         flow = load_dit(self.name, expert=expert, checkpoint=checkpoint)
+        if self.lightx2v:
+            # Fuse the lightx2v LoRA before quantization so the delta gets
+            # quantized along with the base weight.
+            apply_lora(flow, load_lightx2v_lora(expert))
         if self.quantize_bits:
             nn.quantize(flow, bits=self.quantize_bits)
         self.flow = flow

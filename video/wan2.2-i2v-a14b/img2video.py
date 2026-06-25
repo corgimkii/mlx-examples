@@ -60,6 +60,14 @@ if __name__ == "__main__":
         default=None,
         help="Path to custom DiT weights for the low-noise expert.",
     )
+    parser.add_argument(
+        "--lightx2v",
+        action="store_true",
+        help="Fuse the lightx2v/Wan2.2-Lightning 4-step distillation LoRA "
+        "into each DiT expert. With this flag, --steps 4 and "
+        "--guidance 1.0 are the recommended values; 8 (4+4 stage) yields "
+        "better high-motion quality at 2x wall time.",
+    )
     parser.add_argument("--output", default="out.mp4")
     parser.add_argument("--preload-models", action="store_true")
     parser.add_argument(
@@ -85,7 +93,10 @@ if __name__ == "__main__":
         checkpoint_high=args.checkpoint_high,
         checkpoint_low=args.checkpoint_low,
         quantize_bits=args.quantize,
+        lightx2v=args.lightx2v,
     )
+    if args.lightx2v:
+        print("lightx2v 4-step LoRA will be fused into each expert on load")
     if args.quantize:
         print(f"DiT experts will be quantized to {args.quantize}-bit on load")
 
