@@ -84,12 +84,10 @@ if __name__ == "__main__":
         args.model,
         checkpoint_high=args.checkpoint_high,
         checkpoint_low=args.checkpoint_low,
+        quantize_bits=args.quantize,
     )
-
     if args.quantize:
-        nn.quantize(pipeline.flow_high, bits=args.quantize)
-        nn.quantize(pipeline.flow_low, bits=args.quantize)
-        print(f"Quantized DiT experts to {args.quantize}-bit")
+        print(f"DiT experts will be quantized to {args.quantize}-bit on load")
 
     if args.preload_models:
         pipeline.ensure_models_are_loaded()
@@ -121,9 +119,9 @@ if __name__ == "__main__":
     for x_t in tqdm(latents, total=args.steps):
         mx.eval(x_t)
 
-    # Free both DiT experts before VAE decode
-    del pipeline.flow_high
-    del pipeline.flow_low
+    # Free the resident DiT expert before VAE decode
+    del pipeline.flow
+    pipeline._current_expert = None
     mx.clear_cache()
     peak_mem_generation = mx.get_peak_memory() / 1024**3
     mx.reset_peak_memory()

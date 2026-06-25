@@ -5,8 +5,9 @@ Wan 2.2 I2V-A14B image-to-video pipeline.
 
 The A14B variant is a Mixture-of-Time-Step-Experts: two 14B-parameter DiTs
 share architecture and are selected by the timestep boundary inside the
-denoising loop. Only one expert is in memory at a time — `flow_high` runs
-when ``t >= boundary``, `flow_low` runs below.
+denoising loop. Only one expert is in memory at a time — the high-noise
+expert runs while ``t >= boundary`` and is swapped out for the low-noise
+expert below. See `_load_expert` / `_flow_for` for the swap mechanics.
 
 Image conditioning is supplied through `first_frame`, a 20-channel
 tensor that channel-concats with the latent input before the DiT's patch
@@ -19,6 +20,7 @@ import logging
 from typing import Optional, Tuple
 
 import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -34,32 +36,57 @@ class WanPipeline:
         dtype: mx.Dtype = mx.bfloat16,
         checkpoint_high: Optional[str] = None,
         checkpoint_low: Optional[str] = None,
+        quantize_bits: int = 0,
     ):
+        """
+        quantize_bits: 0 = no quantization, 4 = int4, 8 = int8. Applied to
+            each expert at load time so we never hold an un-quantized 14B
+            in memory.
+        """
         self.dtype = dtype
         self.name = name
         self.vae_stride = (4, 8, 8)
         self.z_dim = 16
         self._null_context = None
+        self.quantize_bits = quantize_bits
+        self._checkpoint_high = checkpoint_high
+        self._checkpoint_low = checkpoint_low
 
         spec = configs[name]
         self.boundary = spec.boundary
-        # Two DiT experts swapped by the diffusion timestep. They never
-        # need to be resident in memory simultaneously, but this naive
-        # implementation keeps both around — see README for memory notes.
-        self.flow_high = load_dit(name, expert="high", checkpoint=checkpoint_high)
-        self.flow_low = load_dit(name, expert="low", checkpoint=checkpoint_low)
+        # MoE experts are loaded on demand. Only one is resident at any
+        # time — see `_load_expert` / `_flow_for`. With 64 GB of unified
+        # memory we cannot afford the 28 GB (int8) or 56 GB (bf16) of
+        # both DiTs simultaneously alongside activations + T5 + VAE.
+        self.flow = None  # currently-resident expert (None on first call)
+        self._current_expert = None  # 'high' or 'low' or None
         self.vae = load_vae(name)
         self.t5 = load_t5(name)
         self.t5_tokenizer = load_t5_tokenizer(name)
         self.sampler = FlowUniPCMultistepScheduler()
 
+    def _load_expert(self, expert: str) -> None:
+        """Swap the resident DiT expert. Frees the previous one first to
+        keep the memory footprint at one expert's worth."""
+        if self._current_expert == expert:
+            return
+
+        if self.flow is not None:
+            del self.flow
+            self.flow = None
+            mx.clear_cache()
+
+        checkpoint = self._checkpoint_high if expert == "high" else self._checkpoint_low
+        flow = load_dit(self.name, expert=expert, checkpoint=checkpoint)
+        if self.quantize_bits:
+            nn.quantize(flow, bits=self.quantize_bits)
+        self.flow = flow
+        self._current_expert = expert
+
     def ensure_models_are_loaded(self):
-        mx.eval(
-            self.flow_high.parameters(),
-            self.flow_low.parameters(),
-            self.vae.parameters(),
-            self.t5.parameters(),
-        )
+        # The DiT experts are loaded lazily on the first denoising step,
+        # so we only force-materialize VAE and T5 here.
+        mx.eval(self.vae.parameters(), self.t5.parameters())
 
     def _encode_text(self, text: str) -> mx.array:
         """Encode text prompt with T5. Returns [512, 4096]."""
@@ -130,12 +157,18 @@ class WanPipeline:
         return y.astype(self.dtype)
 
     def _flow_for(self, t: mx.array):
-        """Return the DiT expert selected by this timestep."""
-        # The reference encodes the boundary as `0.900 * num_train_timesteps`;
-        # our sampler timesteps are in the same `[0, num_train_timesteps)`
-        # range so the same threshold applies directly.
+        """Ensure the DiT expert selected by this timestep is resident,
+        swapping the other one out if needed, and return it.
+
+        The reference encodes the boundary as `0.900 * num_train_timesteps`;
+        our sampler timesteps are in the same `[0, num_train_timesteps)`
+        range so the same threshold applies directly. On a typical 50-step
+        schedule with `boundary=0.900` this triggers exactly one swap.
+        """
         boundary_steps = self.boundary * self.sampler.num_train_timesteps
-        return self.flow_high if float(t.item()) >= boundary_steps else self.flow_low
+        expert = "high" if float(t.item()) >= boundary_steps else "low"
+        self._load_expert(expert)
+        return self.flow
 
     def generate_latents(
         self,

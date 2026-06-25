@@ -46,25 +46,28 @@ For all options, `python img2video.py --help`.
 
 ### Quantization
 
-A14B keeps two 14B DiTs in memory simultaneously, so unquantized bf16 needs
-~56 GB of DiT weights alone — out of reach for a 64 GB Mac. Use
-`--quantize` (default 8-bit) or `--quantize 4` to bring it within budget:
+A 14B expert is ~28 GB in bf16 and ~14 GB at 8-bit. The pipeline only ever
+holds one expert resident (see [Memory](#memory) below), so `--quantize 8`
+brings the live DiT weight to ~14 GB — comfortable on a 64 GB Mac. Use
+`--quantize 4` for tighter budgets at the cost of some output quality:
 
 ```shell
 python img2video.py 'Astronaut riding a horse' --image ./inputs/astronaut-on-a-horse.png \
     --quantize 8 --output out_i2v.mp4
 ```
 
-Both experts (`pipeline.flow_high` and `pipeline.flow_low`) are quantized
-together.
+Quantization is applied to each expert at the moment it is loaded, so the
+un-quantized weights never sit in memory.
 
 ### Memory
 
-Both DiT experts are loaded into memory at once. On a 64 GB Mac this
-practically requires `--quantize 8` or lower. The denoising loop swaps
-between the two experts each step around the boundary timestep but does
-not unload either — see the implementation in
-[`wan/pipeline.py`](./wan/pipeline.py).
+Only one DiT expert is resident at a time. The denoising loop starts on
+the high-noise expert; when the schedule crosses `boundary` (≈ step 5 out
+of 50 at the default `boundary=0.900`) the pipeline frees that expert and
+loads the low-noise expert in its place — see `_load_expert` /
+`_flow_for` in [`wan/pipeline.py`](./wan/pipeline.py). Reading the
+low-noise checkpoint from disk on the swap takes a few seconds, which is
+negligible against the overall denoising wall-clock.
 
 To get additional memory savings at the expense of a bit of speed, pass
 `--no-cache` to set `mx.set_cache_limit(0)`. See the
