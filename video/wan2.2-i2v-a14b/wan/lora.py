@@ -92,6 +92,14 @@ def sanitize_lora_weights(
 
         m = re.match(r"^(.*)\.(lora_down|lora_up|alpha)(\.weight)?$", k)
         if m is None:
+            # Some lightx2v variants (Distill 1022) ship extra ``diff`` /
+            # ``diff_b`` / ``diff_m`` tensors that encode a raw bias /
+            # modulation delta rather than a low-rank decomposition. We
+            # skip them — the bulk of the adapter signal lives in the
+            # rank-64 lora_down/up pairs, and the mix recipe ignores
+            # these auxiliary deltas in the same way.
+            if re.search(r"\.(diff|diff_b|diff_m)$", k):
+                continue
             raise ValueError(f"Unrecognized LoRA key: {key}")
         stem, kind, _ = m.groups()
         slot = by_stem.setdefault(stem, {})
@@ -160,11 +168,18 @@ def _map_to_target(stem: str, out_dim: int) -> Tuple[str, Optional[Tuple[int, in
     raise ValueError(f"Cannot map LoRA stem to target: {stem!r}")
 
 
-def apply_lora(model: nn.Module, hf_weights: Dict[str, mx.array]) -> None:
+def apply_lora(
+    model: nn.Module,
+    hf_weights: Dict[str, mx.array],
+    strength: float = 1.0,
+) -> None:
     """Load HF LoRA weights and fuse them into a Wan DiT in place.
 
     Call this *before* `nn.quantize` so the LoRA delta gets quantized
-    along with the base weight.
+    along with the base weight. ``strength`` multiplies the default
+    ``alpha/rank`` scale and can be used to stack a second LoRA at a
+    different weight (e.g. mix recipes that pair a strong high-noise
+    adapter with a weaker low-noise one).
     """
     jobs = sanitize_lora_weights(hf_weights)
 
@@ -176,7 +191,7 @@ def apply_lora(model: nn.Module, hf_weights: Dict[str, mx.array]) -> None:
                 "expected nn.Linear"
             )
         for job in fuse_list:
-            scale = job["alpha"] / job["rank"]
+            scale = strength * job["alpha"] / job["rank"]
             fuse_lora(
                 linear,
                 lora_down=job["down"],

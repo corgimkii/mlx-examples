@@ -26,7 +26,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 from .lora import apply_lora
-from .sampler import FlowUniPCMultistepScheduler
+from .sampler import FlowEulerDiscreteScheduler, FlowUniPCMultistepScheduler
 from .utils import (
     configs,
     load_dit,
@@ -51,10 +51,10 @@ class WanPipeline:
         quantize_bits: 0 = no quantization, 4 = int4, 8 = int8. Applied to
             each expert at load time so we never hold an un-quantized 14B
             in memory.
-        lightx2v: if True, fuse the `lightx2v/Wan2.2-Lightning` 4-step
-            distillation LoRA into each expert at load time. The LoRA is
-            baked into the base weight before quantization so there is no
-            per-step LoRA overhead in the denoising loop.
+        lightx2v: if True, fuse the `lightx2v/Wan2.2-Lightning` Seko-V1
+            4-step distillation LoRA into each expert at load time. The
+            LoRA is baked into the base weight before quantization so
+            there is no per-step LoRA overhead in the denoising loop.
         """
         self.dtype = dtype
         self.name = name
@@ -77,7 +77,13 @@ class WanPipeline:
         self.vae = load_vae(name)
         self.t5 = load_t5(name)
         self.t5_tokenizer = load_t5_tokenizer(name)
-        self.sampler = FlowUniPCMultistepScheduler()
+        # Step-distilled LoRAs (lightx2v) are trained against a plain
+        # Euler flow-matching update on a few hand-picked timesteps. The
+        # UniPC default works for the un-distilled base but produces
+        # pure noise at 4 steps under the distilled adapter.
+        self.sampler = (
+            FlowEulerDiscreteScheduler() if lightx2v else FlowUniPCMultistepScheduler()
+        )
 
     def _load_expert(self, expert: str) -> None:
         """Swap the resident DiT expert. Frees the previous one first to
@@ -234,7 +240,20 @@ class WanPipeline:
         yield (x_t, context, context_null, first_frame)
 
         sampler = self.sampler
-        sampler.set_timesteps(num_steps, shift=shift)
+        if isinstance(sampler, FlowEulerDiscreteScheduler):
+            # Step-distilled adapters expect timesteps drawn from a
+            # *shift-applied* uniform sigma grid, not equal slices of the
+            # raw 1000-step range. With shift=5 and 4 steps this gives
+            # ~[1000, 937, 833, 625], matching the lightx2v reference
+            # ComfyUI workflows. Without the shift the boundary expert
+            # swap fires one step too early and bleeds noise into frames.
+            ntt = sampler.num_train_timesteps
+            sigmas_uniform = [1.0 - i / num_steps for i in range(num_steps)]
+            sigmas_shifted = [shift * s / (1 + (shift - 1) * s) for s in sigmas_uniform]
+            denoising_step_list = [int(round(s * ntt)) for s in sigmas_shifted]
+            sampler.set_timesteps(denoising_step_list, shift=shift)
+        else:
+            sampler.set_timesteps(num_steps, shift=shift)
 
         for step_idx, t in enumerate(sampler.timesteps):
             t_val = t.reshape(1).astype(mx.float32)

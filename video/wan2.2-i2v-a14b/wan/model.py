@@ -140,9 +140,16 @@ class WanModel(nn.Module):
         t_emb, e = self.compute_time_embedding(t)
         e = e.reshape(1, 6, self.dim)
 
-        # Transformer blocks
-        for block in self.blocks:
+        # Force a materialization every few blocks so a single forward
+        # doesn't bundle all 40 transformer layers into one Metal command
+        # buffer — on long sequences (e.g. 832x1216 / 81f) the kernel
+        # exceeds macOS GPU watchdog and aborts with a Command Buffer
+        # Timeout. Splitting the work into shorter buffers also keeps the
+        # per-buffer activation footprint bounded.
+        for i, block in enumerate(self.blocks):
             x = block(x, e, grid_sizes, context)
+            if (i + 1) % 5 == 0:
+                mx.eval(x)
 
         # Output head
         x = self.head(x, t_emb)

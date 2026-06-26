@@ -74,6 +74,31 @@ To get additional memory savings at the expense of a bit of speed, pass
 [documentation](https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.set_cache_limit.html)
 for details.
 
+### lightx2v Distillation LoRA
+
+The `--lightx2v` flag fuses the
+[`lightx2v/Wan2.2-Lightning`](https://huggingface.co/lightx2v/Wan2.2-Lightning)
+4-step distillation LoRA into each expert at load time, collapsing the
+50-step base schedule into 4 steps with no per-step LoRA overhead:
+
+```shell
+python img2video.py 'Astronaut riding a horse' --image ./inputs/astronaut-on-a-horse.png \
+    --lightx2v --steps 4 --guidance 1.0 --quantize 8 --output out_i2v.mp4
+```
+
+The distilled adapter bakes the classifier-free guidance signal into the
+weights, so `--guidance 1.0` (CFG disabled) is the recommended setting —
+external CFG becomes redundant and degrades quality. For high-motion
+scenes that drift toward the LoRA's well-documented slow-motion
+artifacts, an `--steps 8 --guidance 1.5` two-stage run tends to recover
+motion fidelity at 2× the wall time.
+
+The HF adapter ships q/k/v as three separate sub-adapters per attention
+layer; our model fuses q/k/v into a single Linear, so
+[`wan/lora.py`](./wan/lora.py) re-stitches them into the appropriate row
+slice of the fused weight at fuse time. The LoRA is applied before
+quantization so its delta is quantized along with the base weight.
+
 ### Custom DiT Weights
 
 ```shell
