@@ -68,6 +68,25 @@ if __name__ == "__main__":
         "--guidance 1.0 are the recommended values; 8 (4+4 stage) yields "
         "better high-motion quality at 2x wall time.",
     )
+    parser.add_argument(
+        "--lora-high",
+        nargs="+",
+        default=[],
+        metavar="PATH",
+        help="Additional LoRA safetensors files to fuse into the high-noise "
+        "expert, in listed order after --lightx2v. Adapters trained on a "
+        "single noise regime should be applied only to the matching "
+        "expert; use --lora-low for the counterpart or a separate "
+        "low-noise adapter.",
+    )
+    parser.add_argument(
+        "--lora-low",
+        nargs="+",
+        default=[],
+        metavar="PATH",
+        help="Additional LoRA safetensors files to fuse into the low-noise "
+        "expert. See --lora-high for details.",
+    )
     parser.add_argument("--output", default="out.mp4")
     parser.add_argument("--preload-models", action="store_true")
     parser.add_argument(
@@ -94,9 +113,15 @@ if __name__ == "__main__":
         checkpoint_low=args.checkpoint_low,
         quantize_bits=args.quantize,
         lightx2v=args.lightx2v,
+        extra_loras_high=args.lora_high,
+        extra_loras_low=args.lora_low,
     )
     if args.lightx2v:
         print("lightx2v 4-step LoRA will be fused into each expert on load")
+    for path in args.lora_high:
+        print(f"Extra LoRA (high): {path}")
+    for path in args.lora_low:
+        print(f"Extra LoRA (low): {path}")
     if args.quantize:
         print(f"DiT experts will be quantized to {args.quantize}-bit on load")
 

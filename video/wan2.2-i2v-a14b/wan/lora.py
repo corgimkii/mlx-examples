@@ -14,6 +14,11 @@ adapters with q/k/v as three separate adapters per attention layer; our
 model fuses q/k/v into a single ``self_attn.qkv`` (and ``cross_attn.kv``)
 matrix, so ``sanitize_lora_weights`` joins them back together by indexing
 the appropriate row range of the fused weight at fuse time.
+
+Both ``lora_down`` / ``lora_up`` (diffusers convention, e.g. lightx2v)
+and ``lora_A`` / ``lora_B`` (PEFT convention, e.g. many community
+adapters trained via ``sd-scripts``) are accepted; the naming is a
+serialisation choice only, not a shape difference.
 """
 
 import re
@@ -90,7 +95,7 @@ def sanitize_lora_weights(
         if k.startswith("diffusion_model."):
             k = k[len("diffusion_model."):]
 
-        m = re.match(r"^(.*)\.(lora_down|lora_up|alpha)(\.weight)?$", k)
+        m = re.match(r"^(.*)\.(lora_down|lora_up|lora_A|lora_B|alpha)(\.weight)?$", k)
         if m is None:
             # Some lightx2v variants (Distill 1022) ship extra ``diff`` /
             # ``diff_b`` / ``diff_m`` tensors that encode a raw bias /
@@ -103,9 +108,9 @@ def sanitize_lora_weights(
             raise ValueError(f"Unrecognized LoRA key: {key}")
         stem, kind, _ = m.groups()
         slot = by_stem.setdefault(stem, {})
-        if kind == "lora_down":
+        if kind in ("lora_down", "lora_A"):
             slot["down"] = value
-        elif kind == "lora_up":
+        elif kind in ("lora_up", "lora_B"):
             slot["up"] = value
         elif kind == "alpha":
             slot["alpha"] = int(value.item()) if hasattr(value, "item") else int(value)

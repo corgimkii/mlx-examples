@@ -17,7 +17,7 @@ input image as frame 0, zeros for the rest). No CLIP encoder is involved.
 """
 
 import logging
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -46,6 +46,8 @@ class WanPipeline:
         checkpoint_low: Optional[str] = None,
         quantize_bits: int = 0,
         lightx2v: bool = False,
+        extra_loras_high: Optional[List[str]] = None,
+        extra_loras_low: Optional[List[str]] = None,
     ):
         """
         quantize_bits: 0 = no quantization, 4 = int4, 8 = int8. Applied to
@@ -55,6 +57,13 @@ class WanPipeline:
             4-step distillation LoRA into each expert at load time. The
             LoRA is baked into the base weight before quantization so
             there is no per-step LoRA overhead in the denoising loop.
+        extra_loras_high / extra_loras_low: paths to additional LoRA
+            safetensors files to fuse into the corresponding expert.
+            Fused in list order, after ``lightx2v`` (if enabled) and
+            before quantization. Each expert accepts a different set;
+            adapters trained for one noise regime typically don't have
+            a counterpart for the other, and blindly fusing a high-noise
+            style adapter into the low-noise expert produces artifacts.
         """
         self.dtype = dtype
         self.name = name
@@ -65,6 +74,8 @@ class WanPipeline:
         self.lightx2v = lightx2v
         self._checkpoint_high = checkpoint_high
         self._checkpoint_low = checkpoint_low
+        self._extra_loras_high = extra_loras_high or []
+        self._extra_loras_low = extra_loras_low or []
 
         spec = configs[name]
         self.boundary = spec.boundary
@@ -98,10 +109,15 @@ class WanPipeline:
 
         checkpoint = self._checkpoint_high if expert == "high" else self._checkpoint_low
         flow = load_dit(self.name, expert=expert, checkpoint=checkpoint)
+        # Fuse all LoRAs *before* quantization so their deltas get
+        # quantized along with the base weight. lightx2v goes first
+        # because it's the schedule-shaping adapter; style adapters
+        # stack on top of it in list order.
         if self.lightx2v:
-            # Fuse the lightx2v LoRA before quantization so the delta gets
-            # quantized along with the base weight.
             apply_lora(flow, load_lightx2v_lora(expert))
+        extra = self._extra_loras_high if expert == "high" else self._extra_loras_low
+        for path in extra:
+            apply_lora(flow, mx.load(path))
         if self.quantize_bits:
             nn.quantize(flow, bits=self.quantize_bits)
         self.flow = flow
